@@ -55,7 +55,6 @@ def build_application(settings: Settings) -> Application:
         write_timeout=30.0,
         pool_timeout=30.0,
         connection_pool_size=8,
-        retries=3,
     )
 
     get_updates_request = HTTPXRequest(
@@ -63,7 +62,6 @@ def build_application(settings: Settings) -> Application:
         read_timeout=60.0,
         write_timeout=30.0,
         pool_timeout=30.0,
-        retries=3,
     )
 
     application = (
