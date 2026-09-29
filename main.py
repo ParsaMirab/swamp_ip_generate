@@ -67,7 +67,7 @@ def build_application(settings: Settings) -> Application:
     application = (
         ApplicationBuilder()
         .token(settings.bot_token)
-        .request(request)
+        .request(rrequest)
         .get_updates_request(get_updates_request)
         .post_init(_post_init)
         .post_shutdown(_post_shutdown)
