@@ -7,7 +7,7 @@ from telegram.request import BaseRequest, RequestData
 
 
 class AiohttpRequest(BaseRequest):
-    """Telegram request implementation using aiohttp instead of httpx."""
+    """Telegram request implementation using aiohttp."""
 
     def __init__(
         self,
@@ -21,12 +21,20 @@ class AiohttpRequest(BaseRequest):
         super().__init__()
 
         self.connection_pool_size = connection_pool_size
-        self.read_timeout = read_timeout
+        self._read_timeout = read_timeout
         self.write_timeout = write_timeout
         self.connect_timeout = connect_timeout
         self.pool_timeout = pool_timeout
 
         self._session: aiohttp.ClientSession | None = None
+
+    @property
+    def read_timeout(self) -> float | None:
+        return self._read_timeout
+
+    @read_timeout.setter
+    def read_timeout(self, value: float | None) -> None:
+        self._read_timeout = value
 
     async def initialize(self) -> None:
         if self._session is not None and not self._session.closed:
@@ -67,6 +75,7 @@ class AiohttpRequest(BaseRequest):
         connect_timeout: float | None = None,
         pool_timeout: float | None = None,
     ) -> tuple[int, bytes]:
+
         if self._session is None or self._session.closed:
             await self.initialize()
 
