@@ -10,127 +10,129 @@ from __future__ import annotations
 import logging
 import re
 
-from telegram import Update
-from telegram.constants import ParseMode
-from telegram.ext import (
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    ConversationHandler,
-    MessageHandler,
-    filters,
-)
-
 from app.bot import texts
+from app.bot.context import BotContext
 from app.bot.dependencies import get_dependencies
 from app.bot.keyboards.admin import CHANGE_IP_CALLBACK, admin_panel_keyboard
-from app.bot.states import AdminState
+from app.bot.conversation import conversation_manager
 from app.services.host_validator import InvalidHostError, validate_host
 
 logger = logging.getLogger(__name__)
 
-
-def _is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    return get_dependencies(context).settings.is_admin(
-        update.effective_user.id if update.effective_user else None
-    )
+ADMIN_STATE_WAITING_FOR_IP = "admin:waiting_for_ip"
 
 
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def _is_admin(update: dict, context: BotContext) -> bool:
+    return context.dependencies.settings.is_admin(context.user_id)
+
+
+async def admin_panel(update: dict, context: BotContext) -> None:
     """``/admin`` entry point: show the panel with the current IP."""
-    message = update.effective_message
-    if message is None:
-        return ConversationHandler.END
-
     if not _is_admin(update, context):
-        logger.warning("Unauthorized /admin attempt by user %s", update.effective_user)
-        await message.reply_text(texts.NOT_ADMIN)
-        return ConversationHandler.END
+        logger.warning("Unauthorized /admin attempt by user %s", context.user_id)
+        await context.send_message(texts.NOT_ADMIN)
+        return
 
-    current_host = await get_dependencies(context).settings_repo.get_replacement_ip()
-    await message.reply_text(
+    current_host = await context.dependencies.settings_repo.get_replacement_ip()
+    await context.send_message(
         texts.admin_panel(current_host),
-        parse_mode=ParseMode.HTML,
-        reply_markup=admin_panel_keyboard(),
+        parse_mode="HTML",
+        reply_markup=_keyboard_to_dict(admin_panel_keyboard()),
     )
-    return ConversationHandler.END
 
 
-async def change_ip_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def change_ip_entry(update: dict, context: BotContext) -> None:
     """«🔄 تغییر IP» button: ask the admin for the new IP and wait for it."""
-    query = update.callback_query
-    if query is None:
-        return ConversationHandler.END
+    callback_query = update.get("callback_query", {})
+    query_id = callback_query.get("id")
 
     if not _is_admin(update, context):
         logger.warning(
-            "Unauthorized %s callback by user %s", CHANGE_IP_CALLBACK, update.effective_user
+            "Unauthorized %s callback by user %s", CHANGE_IP_CALLBACK, context.user_id
         )
-        await query.answer(texts.NOT_ADMIN, show_alert=True)
-        return ConversationHandler.END
+        if query_id:
+            await context.bot.answer_callback_query(query_id, texts.NOT_ADMIN, show_alert=True)
+        return
 
-    await query.answer()
+    if query_id:
+        await context.bot.answer_callback_query(query_id)
 
-    if query.message is None:
-        await query.edit_message_text(texts.ADMIN_CALLBACK_EXPIRED)
-        return ConversationHandler.END
+    message = callback_query.get("message", {})
+    if not message:
+        await context.send_message(texts.ADMIN_CALLBACK_EXPIRED)
+        return
 
-    await query.message.reply_text(texts.ASK_FOR_IP)
-    return AdminState.WAITING_FOR_IP
+    await context.send_message(texts.ASK_FOR_IP)
+
+    # Set conversation state
+    if context.user_id and context.chat_id:
+        conversation_manager.set_state(context.user_id, context.chat_id, ADMIN_STATE_WAITING_FOR_IP)
 
 
-async def receive_ip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def receive_ip(update: dict, context: BotContext) -> None:
     """Validate the IP the admin sent and persist it."""
-    message = update.effective_message
-    if message is None:
-        return ConversationHandler.END
+    message = update.get("message", {})
+    text = message.get("text", "")
 
     if not _is_admin(update, context):
-        await message.reply_text(texts.NOT_ADMIN)
-        return ConversationHandler.END
+        await context.send_message(texts.NOT_ADMIN)
+        return
 
     try:
-        host = validate_host(message.text or "")
+        host = validate_host(text)
     except InvalidHostError as exc:
-        await message.reply_text(texts.invalid_ip(str(exc)))
-        return AdminState.WAITING_FOR_IP
+        await context.send_message(texts.invalid_ip(str(exc)))
+        return
 
     try:
-        await get_dependencies(context).settings_repo.set_replacement_ip(host)
+        await context.dependencies.settings_repo.set_replacement_ip(host)
     except Exception:
         logger.exception("Failed to persist the replacement IP")
-        await message.reply_text(texts.INTERNAL_ERROR)
-        return ConversationHandler.END
+        await context.send_message(texts.INTERNAL_ERROR)
+        if context.user_id and context.chat_id:
+            conversation_manager.clear_state(context.user_id, context.chat_id)
+        return
 
-    logger.info("Replacement IP updated to %s by %s", host, update.effective_user)
-    await message.reply_text(texts.ip_saved(host), parse_mode=ParseMode.HTML)
-    return ConversationHandler.END
+    logger.info("Replacement IP updated to %s by %s", host, context.user_id)
+    await context.send_message(texts.ip_saved(host), parse_mode="HTML")
+
+    # Clear conversation state
+    if context.user_id and context.chat_id:
+        conversation_manager.clear_state(context.user_id, context.chat_id)
 
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def cancel(update: dict, context: BotContext) -> None:
     """``/cancel``: leave the flow without changing anything."""
-    if update.effective_message is not None:
-        await update.effective_message.reply_text(texts.CANCELLED)
-    return ConversationHandler.END
+    await context.send_message(texts.CANCELLED)
+    if context.user_id and context.chat_id:
+        conversation_manager.clear_state(context.user_id, context.chat_id)
 
 
-def build_admin_conversation() -> ConversationHandler:
-    """Assemble the (single state) admin conversation."""
-    return ConversationHandler(
-        entry_points=[
-            CommandHandler("admin", admin_panel),
-            CallbackQueryHandler(
-                change_ip_entry, pattern=rf"^{re.escape(CHANGE_IP_CALLBACK)}$"
-            ),
-        ],
-        states={
-            AdminState.WAITING_FOR_IP: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_ip),
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-            CommandHandler("admin", admin_panel),
-        ],
-        name="admin_conversation",
-    )
+def _keyboard_to_dict(keyboard) -> dict:
+    """Convert telegram.InlineKeyboardMarkup to dict for our client."""
+    # The keyboard is already a simple structure we can serialize
+    return {
+        "inline_keyboard": [
+            [
+                {"text": btn.text, "callback_data": btn.callback_data}
+                for btn in row
+            ]
+            for row in keyboard.inline_keyboard
+        ]
+    }
+
+
+def register_admin_handlers(router) -> None:
+    """Register admin handlers with the router."""
+    router.add_command_handler("admin", admin_panel)
+    router.add_command_handler("cancel", cancel)
+    router.add_callback_handler(CHANGE_IP_CALLBACK, change_ip_entry)
+
+    # Register message handler for admin state
+    async def admin_message_handler(update: dict, context: BotContext) -> None:
+        if context.user_id and context.chat_id:
+            state = conversation_manager.get_state(context.user_id, context.chat_id)
+            if state == ADMIN_STATE_WAITING_FOR_IP:
+                await receive_ip(update, context)
+
+    router.add_message_handler(admin_message_handler)

@@ -7,110 +7,40 @@ Run it with::
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import signal
 
-from telegram import BotCommand, Update
-from telegram.ext import Application, ApplicationBuilder, ContextTypes
-
-from app.bot.aiohttp_request import AiohttpRequest
-from app.bot.dependencies import DEPENDENCIES_KEY, BotDependencies
-from app.bot.handlers.admin import build_admin_conversation
+from app.bot.handlers.admin import register_admin_handlers
 from app.bot.handlers.user import register_user_handlers
+from app.bot.polling import run_polling
+from app.bot.router import BotRouter
+from app.bot.telegram_client import TelegramClient
+from app.bot.dependencies import BotDependencies
 from app.config.settings import ConfigurationError, Settings, load_settings
 from app.database.database import Database
 from app.database.settings_repository import SettingsRepository
 
-
 logger = logging.getLogger(__name__)
 
-
-BOT_COMMANDS = (
-    BotCommand("start", "شروع"),
-    BotCommand("help", "راهنما"),
-    BotCommand("admin", "پنل مدیریت (فقط ادمین)"),
-)
-
-
-async def _post_init(application: Application) -> None:
-    await application.bot.set_my_commands(list(BOT_COMMANDS))
+BOT_COMMANDS = [
+    {"command": "start", "description": "شروع"},
+    {"command": "help", "description": "راهنما"},
+    {"command": "admin", "description": "پنل مدیریت (فقط ادمین)"},
+]
 
 
-async def _post_shutdown(application: Application) -> None:
-    dependencies: BotDependencies | None = application.bot_data.get(
-        DEPENDENCIES_KEY
-    )
-
-    if dependencies is not None:
-        dependencies.database.close()
+async def setup_bot_commands(telegram: TelegramClient) -> None:
+    """Set bot commands in Telegram."""
+    await telegram.set_my_commands(BOT_COMMANDS)
+    logger.info("Bot commands set")
 
 
-async def _on_error(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    logger.error(
-        "Unhandled exception while processing an update",
-        exc_info=context.error,
-    )
-
-
-def build_application(settings: Settings) -> Application:
-    """Wire up the database, dependencies and every handler."""
-
-    database = Database(settings.database_path)
-    database.initialize()
-
-    # Use aiohttp for all Telegram API requests.
-    request = AiohttpRequest(
-        connection_pool_size=8,
-        connect_timeout=30.0,
-        read_timeout=60.0,
-        write_timeout=30.0,
-        pool_timeout=30.0,
-    )
-
-    get_updates_request = AiohttpRequest(
-        connection_pool_size=4,
-        connect_timeout=30.0,
-        read_timeout=60.0,
-        write_timeout=30.0,
-        pool_timeout=30.0,
-    )
-
-    application = (
-        ApplicationBuilder()
-        .token(settings.bot_token)
-        .request(request)
-        .get_updates_request(get_updates_request)
-        .post_init(_post_init)
-        .post_shutdown(_post_shutdown)
-        .build()
-    )
-
-    application.bot_data[DEPENDENCIES_KEY] = BotDependencies(
-        settings=settings,
-        database=database,
-        settings_repo=SettingsRepository(database),
-    )
-
-    application.add_error_handler(_on_error)
-
-    # Registration order matters:
-    # the admin conversation must be checked first.
-    application.add_handler(build_admin_conversation())
-    register_user_handlers(application)
-
-    return application
-
-
-def main() -> None:
+async def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     )
-
-    # HTTPX is no longer used by our Telegram request layer.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     try:
         settings = load_settings()
@@ -118,19 +48,75 @@ def main() -> None:
         logger.critical("%s", exc)
         raise SystemExit(1) from exc
 
-    application = build_application(settings)
+    # Initialize database
+    database = Database(settings.database_path)
+    database.initialize()
+
+    # Create Telegram client
+    telegram = TelegramClient(token=settings.bot_token)
+
+    # Verify bot token
+    try:
+        me = await telegram.get_me()
+        logger.info("Bot verified: @%s (id=%s)", me.get("username"), me.get("id"))
+    except Exception as exc:
+        logger.critical("Failed to verify bot token: %s", exc)
+        raise SystemExit(1) from exc
+
+    # Set bot commands
+    await setup_bot_commands(telegram)
+
+    # Create dependencies
+    dependencies = BotDependencies(
+        settings=settings,
+        database=database,
+        settings_repo=SettingsRepository(database),
+    )
+
+    # Create router and register handlers
+    router = BotRouter(telegram=telegram, dependencies=dependencies)
+    register_admin_handlers(router)
+    register_user_handlers(router)
 
     logger.info(
         "Swamp IP Generator is up. Admin IDs: %s",
         sorted(settings.admin_ids),
     )
 
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-        bootstrap_retries=-1,
+    # Setup graceful shutdown
+    shutdown_event = asyncio.Event()
+
+    def _signal_handler() -> None:
+        logger.info("Shutdown signal received")
+        shutdown_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, _signal_handler)
+        except NotImplementedError:
+            # Windows doesn't support add_signal_handler for all signals
+            pass
+
+    # Start polling
+    polling_manager = await run_polling(
+        telegram=telegram,
+        handle_update=router.handle,
+        allowed_updates=["message", "callback_query"],
+        timeout=20,
     )
+
+    logger.info("Polling started, waiting for updates...")
+
+    # Wait for shutdown signal
+    await shutdown_event.wait()
+
+    logger.info("Shutting down...")
+    await polling_manager.stop()
+    await telegram.close()
+    database.close()
+    logger.info("Bot stopped gracefully")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

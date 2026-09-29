@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import logging
 
-from telegram import Update
-from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-
 from app.bot import texts
+from app.bot.context import BotContext
 from app.bot.dependencies import get_dependencies
 from app.services.config_replacer import (
     InvalidConfigError,
@@ -19,64 +16,64 @@ from app.services.config_replacer import (
 logger = logging.getLogger(__name__)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start(update: dict, context: BotContext) -> None:
     """Welcome message shown by ``/start`` (and ``/help``)."""
-    if update.effective_message is not None:
-        await update.effective_message.reply_text(texts.WELCOME)
+    await context.send_message(texts.WELCOME)
 
 
-async def handle_config(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_config(update: dict, context: BotContext) -> None:
     """Replace the host of the config the user sent."""
-    message = update.effective_message
-    if message is None or not message.text:
+    message = update.get("message", {})
+    text = message.get("text", "")
+
+    if not text:
         return
 
-    current_host = await get_dependencies(context).settings_repo.get_replacement_ip()
+    # Skip if this is handled by admin conversation
+    if context.user_id and context.chat_id:
+        from app.bot.conversation import conversation_manager
+        state = conversation_manager.get_state(context.user_id, context.chat_id)
+        if state == "admin:waiting_for_ip":
+            return  # Let admin handler process this
+
+    current_host = await context.dependencies.settings_repo.get_replacement_ip()
     if not current_host:
-        await message.reply_text(texts.NO_IP_CONFIGURED)
+        await context.send_message(texts.NO_IP_CONFIGURED)
         return
 
     try:
-        result = replace_config_host(message.text, current_host)
+        result = replace_config_host(text, current_host)
     except UnsupportedProtocolError:
-        logger.info("Unsupported config from %s", update.effective_user)
-        await message.reply_text(texts.UNSUPPORTED_CONFIG)
+        logger.info("Unsupported config from %s", context.user_id)
+        await context.send_message(texts.UNSUPPORTED_CONFIG)
         return
     except InvalidConfigError:
-        logger.info("Invalid config from %s", update.effective_user)
-        await message.reply_text(texts.INVALID_CONFIG)
+        logger.info("Invalid config from %s", context.user_id)
+        await context.send_message(texts.INVALID_CONFIG)
         return
     except Exception:
         # Never leak internals to the user.
         logger.exception("Unexpected error while processing a config")
-        await message.reply_text(texts.INTERNAL_ERROR)
+        await context.send_message(texts.INTERNAL_ERROR)
         return
 
     logger.info(
         "Config processed for %s: %s -> %s",
-        update.effective_user,
+        context.user_id,
         result.old_host,
         result.new_host,
     )
-    await message.reply_text(texts.config_ready(result.config), parse_mode=ParseMode.HTML)
+    await context.send_message(texts.config_ready(result.config), parse_mode="HTML")
 
 
-async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def unknown_command(update: dict, context: BotContext) -> None:
     """Answer commands the bot does not know instead of staying silent."""
-    if update.effective_message is not None:
-        await update.effective_message.reply_text(texts.UNKNOWN_COMMAND)
+    await context.send_message(texts.UNKNOWN_COMMAND)
 
 
-def register_user_handlers(application: Application) -> None:
-    """Register the public handlers.
-
-    They join the very same group as the admin conversation, which must be added
-    first: inside a group only the first matching handler runs, so an admin
-    answering the «IP جدید» prompt is handled by the conversation while a
-    regular user's config falls through to :func:`handle_config`.
-    """
-    application.add_handler(CommandHandler(["start", "help"], start))
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_config)
-    )
-    application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+def register_user_handlers(router) -> None:
+    """Register the public handlers."""
+    router.add_command_handler("start", start)
+    router.add_command_handler("help", start)
+    router.add_message_handler(handle_config)
+    router.set_default_handler(unknown_command)
