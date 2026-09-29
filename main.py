@@ -103,8 +103,11 @@ def main() -> None:
 
     application = build_application(settings)
     logger.info("Swamp IP Generator is up. Admin IDs: %s", sorted(settings.admin_ids))
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        bootstrap_retries=-1,
+    )
 
 if __name__ == "__main__":
     main()
