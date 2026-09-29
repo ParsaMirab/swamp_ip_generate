@@ -49,12 +49,13 @@ def build_application(settings: Settings) -> Application:
     database = Database(settings.database_path)
     database.initialize()
 
-    request = HTTPXRequest(
-        connect_timeout=30.0,
-        read_timeout=30.0,
-        write_timeout=30.0,
-        pool_timeout=30.0,
-    )
+    rrequest = HTTPXRequest(
+         connect_timeout=30.0,
+         read_timeout=60.0,
+         write_timeout=30.0,
+         pool_timeout=30.0,
+         connection_pool_size=8,
+     )
 
     get_updates_request = HTTPXRequest(
         connect_timeout=30.0,
