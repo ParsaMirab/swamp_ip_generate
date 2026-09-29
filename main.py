@@ -6,13 +6,13 @@ Run it with::
 """
 
 from __future__ import annotations
+
+import logging
+
+import httpx
 from telegram import BotCommand, Update
 from telegram.ext import Application, ApplicationBuilder, ContextTypes
 from telegram.request import HTTPXRequest
-import logging
-
-from telegram import BotCommand, Update
-from telegram.ext import Application, ApplicationBuilder, ContextTypes
 
 from app.bot.dependencies import DEPENDENCIES_KEY, BotDependencies
 from app.bot.handlers.admin import build_admin_conversation
@@ -55,6 +55,9 @@ def build_application(settings: Settings) -> Application:
         write_timeout=30.0,
         pool_timeout=30.0,
         connection_pool_size=8,
+        httpx_kwargs={
+            "transport": __import__("httpx").AsyncHTTPTransport(retries=3),
+        },
     )
 
     get_updates_request = HTTPXRequest(
@@ -62,6 +65,9 @@ def build_application(settings: Settings) -> Application:
         read_timeout=60.0,
         write_timeout=30.0,
         pool_timeout=30.0,
+        httpx_kwargs={
+            "transport": __import__("httpx").AsyncHTTPTransport(retries=3),
+        },
     )
 
     application = (
