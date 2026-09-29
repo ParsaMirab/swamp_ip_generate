@@ -1,0 +1,12 @@
+# Secrets
+.env
+
+# Runtime data (SQLite database holding the replacement IP)
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
