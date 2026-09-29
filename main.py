@@ -50,18 +50,20 @@ def build_application(settings: Settings) -> Application:
     database.initialize()
 
     rrequest = HTTPXRequest(
-         connect_timeout=30.0,
-         read_timeout=60.0,
-         write_timeout=30.0,
-         pool_timeout=30.0,
-         connection_pool_size=8,
-     )
+        connect_timeout=30.0,
+        read_timeout=60.0,
+        write_timeout=30.0,
+        pool_timeout=30.0,
+        connection_pool_size=8,
+        retries=3,
+    )
 
     get_updates_request = HTTPXRequest(
         connect_timeout=30.0,
         read_timeout=60.0,
         write_timeout=30.0,
         pool_timeout=30.0,
+        retries=3,
     )
 
     application = (
