@@ -76,26 +76,15 @@ async def change_ip_entry(update: dict, context: BotContext) -> None:
 async def receive_ip(update: dict, context: BotContext) -> None:
     """Validate the IP the admin sent and persist it."""
 
-    message = update.get("message") or {}
-    text = message.get("text")
-
-    logger.info("ADMIN IP UPDATE: %r", update)
-    logger.info("ADMIN IP MESSAGE: %r", message)
-    logger.info("ADMIN IP TEXT: %r", text)
-    logger.info("ADMIN IP TEXT TYPE: %s", type(text).__name__)
+    text = (update.get("text") or "").strip()
 
     if not _is_admin(update, context):
         await context.send_message(texts.NOT_ADMIN)
         return
 
     try:
-        host = validate_host(text or "")
+        host = validate_host(text)
     except InvalidHostError as exc:
-        logger.warning(
-            "ADMIN IP VALIDATION FAILED: raw=%r error=%s",
-            text,
-            exc,
-        )
         await context.send_message(texts.invalid_ip(str(exc)))
         return
 
