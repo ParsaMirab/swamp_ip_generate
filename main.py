@@ -6,7 +6,9 @@ Run it with::
 """
 
 from __future__ import annotations
-
+from telegram import BotCommand, Update
+from telegram.ext import Application, ApplicationBuilder, ContextTypes
+from telegram.request import HTTPXRequest
 import logging
 
 from telegram import BotCommand, Update
@@ -47,25 +49,42 @@ def build_application(settings: Settings) -> Application:
     database = Database(settings.database_path)
     database.initialize()
 
+    request = HTTPXRequest(
+        connect_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=30.0,
+    )
+
+    get_updates_request = HTTPXRequest(
+        connect_timeout=30.0,
+        read_timeout=60.0,
+        write_timeout=30.0,
+        pool_timeout=30.0,
+    )
+
     application = (
         ApplicationBuilder()
         .token(settings.bot_token)
+        .request(request)
+        .get_updates_request(get_updates_request)
         .post_init(_post_init)
         .post_shutdown(_post_shutdown)
         .build()
     )
+
     application.bot_data[DEPENDENCIES_KEY] = BotDependencies(
         settings=settings,
         database=database,
         settings_repo=SettingsRepository(database),
     )
+
     application.add_error_handler(_on_error)
 
-    # Registration order matters: the admin conversation must be checked first,
-    # the public handlers are only reached when it does not match (see
-    # app/bot/handlers/user.py).
+    # Registration order matters: the admin conversation must be checked first.
     application.add_handler(build_admin_conversation())
     register_user_handlers(application)
+
     return application
 
 
