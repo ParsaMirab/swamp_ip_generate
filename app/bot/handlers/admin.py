@@ -75,16 +75,27 @@ async def change_ip_entry(update: dict, context: BotContext) -> None:
 
 async def receive_ip(update: dict, context: BotContext) -> None:
     """Validate the IP the admin sent and persist it."""
-    message = update.get("message", {})
-    text = message.get("text", "")
+
+    message = update.get("message") or {}
+    text = message.get("text")
+
+    logger.info("ADMIN IP UPDATE: %r", update)
+    logger.info("ADMIN IP MESSAGE: %r", message)
+    logger.info("ADMIN IP TEXT: %r", text)
+    logger.info("ADMIN IP TEXT TYPE: %s", type(text).__name__)
 
     if not _is_admin(update, context):
         await context.send_message(texts.NOT_ADMIN)
         return
 
     try:
-        host = validate_host(text)
+        host = validate_host(text or "")
     except InvalidHostError as exc:
+        logger.warning(
+            "ADMIN IP VALIDATION FAILED: raw=%r error=%s",
+            text,
+            exc,
+        )
         await context.send_message(texts.invalid_ip(str(exc)))
         return
 
@@ -93,17 +104,30 @@ async def receive_ip(update: dict, context: BotContext) -> None:
     except Exception:
         logger.exception("Failed to persist the replacement IP")
         await context.send_message(texts.INTERNAL_ERROR)
+
         if context.user_id and context.chat_id:
-            conversation_manager.clear_state(context.user_id, context.chat_id)
+            conversation_manager.clear_state(
+                context.user_id,
+                context.chat_id,
+            )
         return
 
-    logger.info("Replacement IP updated to %s by %s", host, context.user_id)
-    await context.send_message(texts.ip_saved(host), parse_mode="HTML")
+    logger.info(
+        "Replacement IP updated to %s by %s",
+        host,
+        context.user_id,
+    )
 
-    # Clear conversation state
+    await context.send_message(
+        texts.ip_saved(host),
+        parse_mode="HTML",
+    )
+
     if context.user_id and context.chat_id:
-        conversation_manager.clear_state(context.user_id, context.chat_id)
-
+        conversation_manager.clear_state(
+            context.user_id,
+            context.chat_id,
+        )
 
 async def cancel(update: dict, context: BotContext) -> None:
     """``/cancel``: leave the flow without changing anything."""
