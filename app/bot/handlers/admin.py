@@ -48,26 +48,30 @@ async def change_ip_entry(update: dict, context: BotContext) -> None:
 
     if not _is_admin(update, context):
         logger.warning(
-            "Unauthorized %s callback by user %s", CHANGE_IP_CALLBACK, context.user_id
+            "Unauthorized %s callback by user %s",
+            CHANGE_IP_CALLBACK,
+            context.user_id,
         )
+
         if query_id:
-            await context.bot.answer_callback_query(query_id, texts.NOT_ADMIN, show_alert=True)
+            await context.bot.answer_callback_query(
+                query_id,
+                texts.NOT_ADMIN,
+                show_alert=True,
+            )
         return
 
     if query_id:
         await context.bot.answer_callback_query(query_id)
 
-    message = callback_query.get("message", {})
-    if not message:
-        await context.send_message(texts.ADMIN_CALLBACK_EXPIRED)
-        return
-
     await context.send_message(texts.ASK_FOR_IP)
 
-    # Set conversation state
     if context.user_id and context.chat_id:
-        conversation_manager.set_state(context.user_id, context.chat_id, ADMIN_STATE_WAITING_FOR_IP)
-
+        conversation_manager.set_state(
+            context.user_id,
+            context.chat_id,
+            ADMIN_STATE_WAITING_FOR_IP,
+        )
 
 async def receive_ip(update: dict, context: BotContext) -> None:
     """Validate the IP the admin sent and persist it."""
